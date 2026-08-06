@@ -32,6 +32,12 @@ const BG_PLATE = { x: 405, y: 109, w: 526, h: 518 };
 const PLATE_MAX_W = 0.86;
 const PLATE_MAX_H = 0.80;
 
+// Escala con la que el carrusel dibuja la tarjeta centrada (efecto de
+// profundidad de campo). Los puentes la necesitan para calzar el sprite
+// contra la pieza: getComputedStyle devuelve la medida sin transformar.
+const CARD_ACTIVE_SCALE = 1.05;
+const CARD_FAR_SCALE = 0.82;
+
 const images = [];
 const frameSequence = { frame: 0 };
 
@@ -337,9 +343,9 @@ tl.to('#panelEsmaltado', {
   // ---- Estado inicial de profundidad de campo ----
   // La primera tarjeta empieza como "activa" (en el centro).
   // El resto empieza atenuado y borroso.
-  gsap.set(cards[0], { scale: 1.05, opacity: 1, filter: 'blur(0px)' });
+  gsap.set(cards[0], { scale: CARD_ACTIVE_SCALE, opacity: 1, filter: 'blur(0px)' });
   cards.slice(1).forEach(c => {
-    gsap.set(c, { scale: 0.82, opacity: 0.35, filter: 'blur(5px)' });
+    gsap.set(c, { scale: CARD_FAR_SCALE, opacity: 0.35, filter: 'blur(5px)' });
   });
 
   let scrollTriggerInstance = null;
@@ -419,7 +425,7 @@ tl.to('#panelEsmaltado', {
           const maxDist = containerRectNow.width * 0.7; // radio de influencia
           const t = Math.min(dist / maxDist, 1);  // 0 = centro, 1 = lejos
 
-          const scale = gsap.utils.interpolate(1.05, 0.82, t);
+          const scale = gsap.utils.interpolate(CARD_ACTIVE_SCALE, CARD_FAR_SCALE, t);
           const opacity = gsap.utils.interpolate(1, 0.32, t);
           const blur = gsap.utils.interpolate(0, 6, t);
 
@@ -483,11 +489,74 @@ tl.to('#panelEsmaltado', {
   const BASE = 640; // resolución base (px) de los canvas, cuadrados
   const pad = (n) => ('000' + n).slice(-3);
 
-  // Caja del plato dentro de los frames del sprite (720x720), normalizada.
-  // Los frames son cuadrados igual que el canvas, así que el dibujo no
-  // deforma; lo que aporta esta caja es poder escalar y ubicar el sprite
-  // por su contenido —el plato— y no por el lienzo que lo rodea.
-  const VG_PLATE = { cx: 367.5 / 720, cy: 356.0 / 720, d: 592 / 720 };
+  // Caja del objeto dentro de los frames de cada sprite (720x720),
+  // normalizada. Los frames son cuadrados igual que el canvas, así que el
+  // dibujo no deforma; lo que aportan estas cajas es poder escalar y ubicar
+  // el sprite por su contenido —la pieza— y no por el lienzo que lo rodea.
+  const VG_SPRITE = { cx: 367.5 / 720, cy: 356.0 / 720, w: 592 / 720 };
+  const TT_SPRITE = { cx: 375.5 / 720, cy: 336.5 / 720, w: 326 / 720 };
+
+  // Caja de esa misma pieza dentro de la foto de su tarjeta, normalizada.
+  // Con esto el sprite despega y aterriza del tamaño exacto con el que la
+  // pieza se ve en la tarjeta, en vez de una fracción calibrada a ojo.
+  const VG_CARD = { imgW: 951, imgH: 983, cx: 461.5 / 951, cy: 494.5 / 983, w: 830 / 951 };
+  const TT_CARD = { imgW: 978, imgH: 986, cx: 508.0 / 978, cy: 350.0 / 986, w: 312 / 978 };
+
+  // Tramo del vuelo durante el cual el punto de despegue sigue acompañando
+  // a lo que hay debajo mientras se va con el scroll. Sirve para que el
+  // arranque se lea como la misma pieza levantándose; pasado ese tramo el
+  // ancla se queda quieta y el sprite se va solo. Si acompañara todo el
+  // vuelo, la pieza subiría tanto que se cortaría contra el borde de arriba.
+  const TAKEOFF_FOLLOW = 0.12;
+
+  function takeoffDrift(self) {
+    return Math.min(self.progress, TAKEOFF_FOLLOW) * (self.end - self.start);
+  }
+
+  // Contraparte del despegue. El destino se calcula donde va a quedar cuando
+  // el puente termine, pero hasta entonces la sección sigue entrando con el
+  // scroll y todavía está más abajo. Sin corregirlo el sprite llega antes
+  // que la tarjeta y el relevo se hace con las dos piezas desalineadas.
+  const LANDING_FOLLOW = 0.12;
+
+  function landingSettle(self) {
+    return Math.min(1 - self.progress, LANDING_FOLLOW) * (self.end - self.start);
+  }
+
+  // Pose del canvas (centro + escala) que deja la pieza del sprite con ancho
+  // `w` y centrada en (cx, cy). Como la pieza no está centrada dentro del
+  // frame, hay que descontar su desplazamiento dentro del cuadro: por eso se
+  // posiciona por la caja de la pieza y no por la del canvas.
+  function poseFor(sprite, cx, cy, w) {
+    const scale = w / (sprite.w * BASE);
+    return {
+      scale,
+      x: cx - (sprite.cx - 0.5) * BASE * scale,
+      y: cy - (sprite.cy - 0.5) * BASE * scale
+    };
+  }
+
+  // Cuánto puede sobresalir la pieza respecto al ancho de su tarjeta. En
+  // pantallas anchas no llega a activarse. En angostas la tarjeta es una
+  // franja alta y el recorte de object-fit: cover amplía tanto la foto que
+  // la pieza saldría 2,5 veces más ancha que la tarjeta: calzarla ahí
+  // significaría aterrizar tapando media pantalla.
+  const PIECE_MAX_OVER = 1.25;
+
+  // Dónde queda en pantalla la pieza que muestra la foto de una tarjeta. Las
+  // fotos se pintan con object-fit: cover, así que la imagen se amplía hasta
+  // tapar la tarjeta y se recorta el sobrante del lado largo: para saber
+  // dónde cae la pieza hay que repetir esa misma escala y ese centrado.
+  function pieceInCard(piece, card) {
+    const cover = Math.max(card.width / piece.imgW, card.height / piece.imgH);
+    const scale = Math.min(cover, (card.width * PIECE_MAX_OVER) / (piece.w * piece.imgW));
+
+    return {
+      cx: card.centerX + (piece.cx - 0.5) * piece.imgW * scale,
+      cy: card.centerY + (piece.cy - 0.5) * piece.imgH * scale,
+      w: piece.w * piece.imgW * scale
+    };
+  }
 
   function setupCanvas(canvas) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -620,10 +689,17 @@ tl.to('#panelEsmaltado', {
     const container = document.querySelector('.collection-carousel-container');
     if (!container) return null;
     const containerRect = container.getBoundingClientRect();
+
+    // getComputedStyle da la medida de layout, SIN la transformación: la
+    // tarjeta centrada se dibuja ampliada por la profundidad de campo del
+    // carrusel. Sin este factor el sprite calza contra un tamaño que no es
+    // el que se ve, y despega y aterriza un 5% más chico que la pieza.
+    // No se lee el rect real porque en el momento del refresh la tarjeta que
+    // interesa puede no ser todavía la centrada.
     const cs = getComputedStyle(card);
     return {
-      width: parseFloat(cs.width),
-      height: parseFloat(cs.height),
+      width: parseFloat(cs.width) * CARD_ACTIVE_SCALE,
+      height: parseFloat(cs.height) * CARD_ACTIVE_SCALE,
       centerX: containerRect.left + containerRect.width / 2,
       centerY: window.innerHeight / 2
     };
@@ -636,8 +712,14 @@ tl.to('#panelEsmaltado', {
     if (!bridge || !canvas) return;
 
     const FRAME_COUNT = 192;
-    const LAND_FILL = 0.85; // cuánto del lado corto de la tarjeta ocupa el plato al aterrizar
     const TINT_FADE = 0.45; // en qué punto del vuelo termina de apagarse el velo del hero
+
+    // Tramo final en el que el sprite se funde con la tarjeta. El plato llega
+    // del tamaño con el que se ve en la foto, y esa foto es más ancha que la
+    // tarjeta: sobresale por los costados. Fundirlo en vez de cortarlo de
+    // golpe disuelve ese sobrante y de paso tapa que el sprite y la foto son
+    // dos tomas distintas de la misma pieza.
+    const HANDOFF = 0.12;
 
     setupCanvas(canvas);
     const seq = createSequence(canvas, 'assets/fames/van-gogh-frames_sin_fondo', 'v', FRAME_COUNT);
@@ -648,24 +730,14 @@ tl.to('#panelEsmaltado', {
     let trigger = null;
     let landing = null;
 
-    // Pose del canvas (centro + escala) que deja el plato del sprite con
-    // diámetro `d` y centrado en (cx, cy). Como el plato no está centrado
-    // dentro del frame, hay que descontar su desplazamiento en el cuadro:
-    // por eso se posiciona por la caja del plato y no por la del canvas.
-    function poseFor(cx, cy, d) {
-      const scale = d / (VG_PLATE.d * BASE);
-      return {
-        scale,
-        x: cx - (VG_PLATE.cx - 0.5) * BASE * scale,
-        y: cy - (VG_PLATE.cy - 0.5) * BASE * scale
-      };
-    }
-
+    // Aterriza calzado sobre el plato tal como se ve dentro de la tarjeta:
+    // mismo tamaño y misma posición que la foto que queda debajo, así el
+    // relevo entre el sprite y la tarjeta no se nota.
     function computeLanding(self) {
       const card = getCollectionCardRect('first', self.end);
       if (!card) return null;
-      return poseFor(card.centerX, card.centerY,
-        LAND_FILL * Math.min(card.width, card.height));
+      const pieza = pieceInCard(VG_CARD, card);
+      return poseFor(VG_SPRITE, pieza.cx, pieza.cy, pieza.w);
     }
 
     function build() {
@@ -703,16 +775,21 @@ tl.to('#panelEsmaltado', {
           // arriba con el scroll y el plato del fondo se va con él. El
           // sprite lo acompaña al principio —la interpolación arranca con
           // pendiente cero— y recién después se despega hacia la tarjeta.
-          const drift = Math.max(0, self.scroll() - self.start);
+          // El recorrido se saca del progreso y no de self.scroll(), que
+          // acá devuelve el scroll ya consumido por el pin y da siempre 0.
+          const drift = takeoffDrift(self);
           const plate = getBgPlateRect();
-          const takeoff = poseFor(plate.cx, plate.cy - drift, plate.d);
+          const takeoff = poseFor(VG_SPRITE, plate.cx, plate.cy - drift, plate.d);
           const eased = gsap.parseEase('power2.inOut')(p);
+
+          const settle = landingSettle(self);
 
           gsap.set(canvas, {
             x: gsap.utils.interpolate(takeoff.x, landing.x, eased),
-            y: gsap.utils.interpolate(takeoff.y, landing.y, eased),
+            y: gsap.utils.interpolate(takeoff.y, landing.y + settle, eased),
             scale: gsap.utils.interpolate(takeoff.scale, landing.scale, eased),
-            autoAlpha: p >= 0.995 ? 0 : 1 // al final revela la tarjeta real
+            // Ya calzado sobre la tarjeta, se desvanece para cederle el lugar.
+            autoAlpha: Math.min(1, Math.max(0, (1 - p) / HANDOFF))
           });
 
           // El velo se calcula con la posición del plato dentro del hero
@@ -748,6 +825,8 @@ tl.to('#panelEsmaltado', {
     if (!bridge || !canvas || !visual) return;
 
     const FRAME_COUNT = 192;
+    const TT_FADE_IN = 0.08; // tramo inicial en el que el sprite releva a la tarjeta
+
     setupCanvas(canvas);
     const seq = createSequence(canvas, 'assets/fames/totoro-frames_sin_fondo', 't', FRAME_COUNT);
 
@@ -784,24 +863,34 @@ tl.to('#panelEsmaltado', {
     let poses = null;
 
     function computePoses(self) {
-      const from = getCollectionCardRect('last', self.start);
-      if (!from) return null;
-      const to = getVisualRect(from, self.end);
-      if (!to || !to.width) return null;
+      const card = getCollectionCardRect('last', self.start);
+      if (!card) return null;
+      const slot = getVisualRect(card, self.end);
+      if (!slot || !slot.width) return null;
 
-      // El bloque de contacto muestra t_192 dentro de una caja cuadrada, y
-      // los frames también son cuadrados: el canvas calza con la imagen
-      // estática si termina exactamente sobre esa caja.
-      return {
-        from: {
-          x: from.centerX, y: from.centerY,
-          scale: Math.min(from.width, from.height) / BASE
-        },
-        to: {
-          x: to.centerX, y: to.centerY,
-          scale: Math.min(to.width, to.height) / BASE
-        }
+      // Despega calzado sobre la figura tal como se ve dentro de la tarjeta.
+      const pieza = pieceInCard(TT_CARD, card);
+
+      // Y aterriza sobre la imagen estática de contacto, que muestra el
+      // frame completo (object-fit: contain) dentro de una caja cuadrada:
+      // ahí la figura queda donde la pone su propia caja dentro del frame.
+      const destino = {
+        cx: slot.centerX + (TT_SPRITE.cx - 0.5) * slot.width,
+        cy: slot.centerY + (TT_SPRITE.cy - 0.5) * slot.height,
+        w: TT_SPRITE.w * slot.width
       };
+
+      return {
+        pieza,
+        to: poseFor(TT_SPRITE, destino.cx, destino.cy, destino.w)
+      };
+    }
+
+    // La imagen estática de contacto es el destino del vuelo: si se ve desde
+    // antes, el Totoro ya está esperando ahí y el aterrizaje no significa
+    // nada. Se revela justo cuando el sprite se apaga, en el mismo umbral.
+    function revealVisual(shown) {
+      visual.style.opacity = shown ? '1' : '0';
     }
 
     function build() {
@@ -817,7 +906,10 @@ tl.to('#panelEsmaltado', {
         endTrigger: '#contacto',
         end: 'top top',
         scrub: 1,
-        onRefresh: (self) => { poses = computePoses(self); },
+        onRefresh: (self) => {
+          poses = computePoses(self);
+          revealVisual(self.progress >= 0.995);
+        },
         onUpdate: (self) => {
           seq.load();
           if (!poses) poses = computePoses(self);
@@ -825,18 +917,35 @@ tl.to('#panelEsmaltado', {
 
           const p = self.progress;
           const eased = gsap.parseEase('power1.inOut')(p);
-          let opacity = 1
-          if (p >= 0.995) opacity = 0; // revela la imagen estática del bloque de contacto
+          const llego = p >= 0.995;
+
+          // Al arrancar el puente, la colección deja de estar pegada y se va
+          // hacia arriba con el scroll: la tarjeta —y la figura dentro de
+          // ella— se mueven. El despegue la acompaña para que se lea como la
+          // misma pieza, igual que hace Van Gogh al levantarse de la mesa.
+          const drift = takeoffDrift(self);
+          const from = poseFor(TT_SPRITE, poses.pieza.cx,
+            poses.pieza.cy - drift, poses.pieza.w);
+
+          // El sprite se apaga y la imagen estática se enciende en el mismo
+          // umbral: el relevo ocurre con las dos calzadas, sin superponerse
+          // ni dejar un hueco. Al principio entra fundido, para no aparecer
+          // de golpe encima de la figura que ya muestra la tarjeta.
+          const settle = landingSettle(self);
 
           gsap.set(canvas, {
-            x: gsap.utils.interpolate(poses.from.x, poses.to.x, eased),
-            y: gsap.utils.interpolate(poses.from.y, poses.to.y, eased),
-            scale: gsap.utils.interpolate(poses.from.scale, poses.to.scale, eased),
-            autoAlpha: opacity
+            x: gsap.utils.interpolate(from.x, poses.to.x, eased),
+            y: gsap.utils.interpolate(from.y, poses.to.y + settle, eased),
+            scale: gsap.utils.interpolate(from.scale, poses.to.scale, eased),
+            autoAlpha: llego ? 0 : Math.min(1, p / TT_FADE_IN)
           });
+          revealVisual(llego);
           seq.draw(Math.min(FRAME_COUNT - 1, Math.floor(p * FRAME_COUNT)));
         },
-        onLeaveBack: () => gsap.set(canvas, { autoAlpha: 0 })
+        onLeaveBack: () => {
+          revealVisual(false);
+          gsap.set(canvas, { autoAlpha: 0 });
+        }
       });
     }
 
