@@ -936,7 +936,13 @@ tl.to('#panelEsmaltado', {
           // (sin el drift): el overlay se desplaza junto con el canvas.
           const tint = matchTint(overlayAlphaAt(plate.cy / window.innerHeight)) *
             Math.max(0, 1 - p / TINT_FADE);
-          seq.draw(Math.min(FRAME_COUNT - 1, Math.floor(p * FRAME_COUNT)), tint);
+          // La secuencia avanza con la misma curva que el desplazamiento, no
+          // con el progreso crudo: si no, en la aparición y en el aterrizaje
+          // —donde la pieza casi no se mueve— los frames seguirían pasando a
+          // velocidad máxima y el vuelo se siente acelerado justo en los dos
+          // momentos que uno mira. La curva vale 0 en 0 y 1 en 1, así que el
+          // primer y el último frame caen donde caían antes.
+          seq.draw(Math.min(FRAME_COUNT - 1, Math.floor(eased * FRAME_COUNT)), tint);
         },
         onLeaveBack: () => {
           setRestingEmpty(false); // vuelve el plato a la mesa
@@ -1097,7 +1103,9 @@ tl.to('#panelEsmaltado', {
             autoAlpha: llego ? 0 : Math.min(1, p / TT_FADE_IN)
           });
           revealVisual(llego);
-          seq.draw(Math.min(FRAME_COUNT - 1, Math.floor(p * FRAME_COUNT)));
+          // Misma curva que el desplazamiento, igual que en el puente de Van
+          // Gogh: la secuencia se frena donde se frena la figura.
+          seq.draw(Math.min(FRAME_COUNT - 1, Math.floor(eased * FRAME_COUNT)));
         },
         onLeaveBack: () => {
           revealVisual(false);
