@@ -673,12 +673,15 @@ p {
 }
 
 @media (max-width: 768px) {
-  .frame-bridge {
-    display: none;
+
+  /* Los puentes también corren en mobile. Acá las secciones vecinas ya no
+     son oscuras las dos, así que el tramo hace de degradado entre ellas. */
+  #vanGoghBridge {
+    background: linear-gradient(to bottom, var(--carbon), var(--arena));
   }
 
-  .sprite-canvas {
-    display: none !important;
+  #totoroBridge {
+    background: linear-gradient(to bottom, var(--arena), var(--crema));
   }
 }
 
@@ -1122,8 +1125,12 @@ p {
     text-align: center;
   }
 
+  /* El visual de contacto es el destino donde aterriza el sprite de Totoro:
+     si no existe, el puente no tiene dónde terminar. Se muestra también en
+     mobile, acotado para que no se coma la pantalla. */
   .contact-visual {
-    display: none;
+    width: min(62vw, 300px);
+    margin: 0 auto var(--space-lg);
   }
 
   .contact-content {
