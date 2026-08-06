@@ -523,6 +523,131 @@ tl.to('#panelEsmaltado', {
     return Math.min(1 - self.progress, LANDING_FOLLOW) * (self.end - self.start);
   }
 
+  // --- Intercambio de la foto de una tarjeta ---------------------------
+  // Superpone una segunda foto sobre la de la tarjeta y alterna entre las
+  // dos. Se usa para que la pieza aparezca o desaparezca en el instante
+  // exacto del aterrizaje o del despegue: si no, se ve la pieza en la
+  // tarjeta y volando al mismo tiempo.
+  //
+  // Los archivos `sin-*` pesan unas siete veces más que los `prod-*`, así
+  // que la descarga arranca junto con la precarga de la secuencia del
+  // puente y el cambio se aplica sólo cuando la imagen ya está lista: hasta
+  // entonces la tarjeta se queda como está en vez de parpadear.
+  function createCardSwap(index, src) {
+    const holder = document.querySelectorAll('.collection-card-image')[index];
+    if (!holder) return { load() {}, show() {} };
+
+    const alt = document.createElement('img');
+    alt.className = 'collection-card-alt';
+    alt.alt = '';
+    alt.setAttribute('aria-hidden', 'true');
+    alt.style.opacity = '0';
+    holder.appendChild(alt);
+
+    let wanted = false;
+
+    function apply() {
+      if (!alt.complete || !alt.naturalWidth) return;
+      alt.style.opacity = wanted ? '1' : '0';
+    }
+
+    return {
+      load() {
+        if (alt.getAttribute('src')) return;
+        alt.addEventListener('load', apply);
+        alt.src = src;
+      },
+      show(on) {
+        wanted = on;
+        apply();
+      }
+    };
+  }
+
+  // --- Apertura de la tarjeta que recibe el plato ----------------------
+  // La tarjeta 1 recibe el plato "abierta": ensanchada hasta que la pieza
+  // entra completa, como una ventana que se abre en el aterrizaje y se va
+  // cerrando con el scroll hasta el ancho de siempre.
+  //
+  // Se ensancha `.collection-card-inner`, que sobresale de su tarjeta hacia
+  // los dos lados, y no `.collection-card`: así el ancho de layout no cambia
+  // y el carrusel sigue centrando las tarjetas con las medidas de siempre.
+  // Como el recorte de object-fit: cover lo manda el alto —que no cambia—,
+  // la foto no se mueve ni se re-escala: sólo se abre y se cierra el marco.
+  const CARD_OPEN_MARGIN = 1.12;  // aire alrededor de la pieza al abrirse
+  const CARD_OPEN_SPAN = 0.55;    // en cuántos viewports termina de cerrarse
+
+  function openCardWidth(closedWidth, height) {
+    const cover = Math.max(closedWidth / VG_CARD.imgW, height / VG_CARD.imgH);
+    const piece = VG_CARD.w * VG_CARD.imgW * cover;
+    return Math.min(
+      piece * CARD_OPEN_MARGIN,
+      height * (VG_CARD.imgW / VG_CARD.imgH), // más allá, cover recortaría de alto
+      window.innerWidth * 0.92                // en pantallas angostas, lo que entre
+    );
+  }
+
+  let cardOpenAmount = 1;
+
+  function setCardOpen(amount) {
+    cardOpenAmount = Math.min(1, Math.max(0, amount));
+
+    const card = document.querySelectorAll('.collection-card')[0];
+    const inner = card && card.querySelector('.collection-card-inner');
+    if (!inner) return;
+
+    const cs = getComputedStyle(card);
+    const closed = parseFloat(cs.width);
+    const open = Math.max(closed, openCardWidth(closed, parseFloat(cs.height)));
+    const width = closed + (open - closed) * cardOpenAmount;
+
+    inner.style.width = width + 'px';
+    // En mobile las tarjetas van en una tira que se desplaza a mano y la
+    // primera está pegada al borde: ahí se ensancha sólo hacia adentro, o el
+    // scroller le corta el lado izquierdo.
+    inner.style.left = isMobile() ? '0px' : (closed - width) / 2 + 'px';
+    // Abierta sobresale más que el hueco entre tarjetas: sin esto la
+    // siguiente, que va después en el DOM, le pisaría el borde.
+    card.style.zIndex = width > closed + 1 ? '5' : '';
+  }
+
+  // Mide la tarjeta 1 tal como va a estar en el aterrizaje —abierta— y no en
+  // el estado que tenga cuando ScrollTrigger decida refrescar.
+  function measureOpenCard(scrollPos) {
+    const previo = cardOpenAmount;
+    setCardOpen(1);
+    const rect = getCollectionCardRect('first', scrollPos);
+    setCardOpen(previo);
+    return rect;
+  }
+
+  (function initCardOpening() {
+    let trigger = null;
+
+    function build() {
+      if (trigger) trigger.kill();
+      trigger = ScrollTrigger.create({
+        // Arranca justo donde termina el vuelo de Van Gogh: la tarjeta ya
+        // está abierta cuando recibe el plato y se cierra a partir de ahí.
+        trigger: '#coleccion',
+        start: 'top top',
+        end: () => '+=' + window.innerHeight * CARD_OPEN_SPAN,
+        scrub: 0.6,
+        onRefresh: (self) => setCardOpen(1 - self.progress),
+        onUpdate: (self) => setCardOpen(1 - self.progress),
+        onLeaveBack: () => setCardOpen(1)
+      });
+    }
+
+    requestAnimationFrame(() => requestAnimationFrame(build));
+
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(build, 200);
+    });
+  })();
+
   // Pose del canvas (centro + escala) que deja la pieza del sprite con ancho
   // `w` y centrada en (cx, cy). Como la pieza no está centrada dentro del
   // frame, hay que descontar su desplazamiento dentro del cuadro: por eso se
@@ -725,7 +850,15 @@ tl.to('#panelEsmaltado', {
     const seq = createSequence(canvas, 'assets/fames/van-gogh-frames_sin_fondo', 'v', FRAME_COUNT);
 
     // Precarga anticipada, cerca del final de la secuencia principal
-    ScrollTrigger.create({ trigger: '#scrollytelling', start: '35% top', once: true, onEnter: () => seq.load() });
+    // La tarjeta 1 muestra la tela vacía hasta el aterrizaje: el plato está
+    // volando, no puede estar además posado en la tarjeta.
+    const swap = createCardSwap(0, 'assets/images/sin-van-gogh.webp');
+    swap.show(true);
+
+    ScrollTrigger.create({
+      trigger: '#scrollytelling', start: '35% top', once: true,
+      onEnter: () => { seq.load(); swap.load(); }
+    });
 
     let trigger = null;
     let landing = null;
@@ -734,7 +867,7 @@ tl.to('#panelEsmaltado', {
     // mismo tamaño y misma posición que la foto que queda debajo, así el
     // relevo entre el sprite y la tarjeta no se nota.
     function computeLanding(self) {
-      const card = getCollectionCardRect('first', self.end);
+      const card = measureOpenCard(self.end);
       if (!card) return null;
       const pieza = pieceInCard(VG_CARD, card);
       return poseFor(VG_SPRITE, pieza.cx, pieza.cy, pieza.w);
@@ -757,6 +890,7 @@ tl.to('#panelEsmaltado', {
         onRefresh: (self) => {
           landing = computeLanding(self);
           setRestingEmpty(self.progress > 0);
+          swap.show(self.progress < 1 - HANDOFF);
         },
         onUpdate: (self) => {
           seq.load();
@@ -770,6 +904,12 @@ tl.to('#panelEsmaltado', {
           // p_193 (mesa vacía) y lo que se ve moverse es el sprite: el
           // plato se levanta. Al volver hacia arriba, p_192 regresa.
           setRestingEmpty(p > 0);
+
+          // La pieza aparece en la tarjeta al empezar el relevo, no al
+          // terminarlo: el sprite todavía está opaco y encima, así que la
+          // tapa mientras se funde con ella. Antes de eso la tarjeta está
+          // vacía, y al volver hacia arriba se vacía de nuevo.
+          swap.show(p < 1 - HANDOFF);
 
           // Pasado el despegue, el contenedor sticky del hero se va hacia
           // arriba con el scroll y el plato del fondo se va con él. El
@@ -800,6 +940,7 @@ tl.to('#panelEsmaltado', {
         },
         onLeaveBack: () => {
           setRestingEmpty(false); // vuelve el plato a la mesa
+          swap.show(true);        // y la tarjeta vuelve a quedar vacía
           gsap.set(canvas, { autoAlpha: 0 });
         }
       });
@@ -831,7 +972,16 @@ tl.to('#panelEsmaltado', {
     const seq = createSequence(canvas, 'assets/fames/totoro-frames_sin_fondo', 't', FRAME_COUNT);
 
     // Precarga anticipada, cerca del final del recorrido horizontal
-    ScrollTrigger.create({ trigger: '#vanGoghBridge', start: 'top top', once: true, onEnter: () => seq.load() });
+    // Apenas la figura despega, la última tarjeta queda vacía: ya no está
+    // ahí. El índice se resuelve al vuelo para no fijar cuántas tarjetas hay.
+    const swap = createCardSwap(
+      document.querySelectorAll('.collection-card-image').length - 1,
+      'assets/images/sin-totoro.webp');
+
+    ScrollTrigger.create({
+      trigger: '#vanGoghBridge', start: 'top top', once: true,
+      onEnter: () => { seq.load(); swap.load(); }
+    });
 
     // Rect del slot visual de contacto, que es donde aterriza el sprite.
     // En desktop se le fija el tamaño en función de la tarjeta (+30%) y se
@@ -909,6 +1059,7 @@ tl.to('#panelEsmaltado', {
         onRefresh: (self) => {
           poses = computePoses(self);
           revealVisual(self.progress >= 0.995);
+          swap.show(self.progress >= TT_FADE_IN);
         },
         onUpdate: (self) => {
           seq.load();
@@ -927,6 +1078,12 @@ tl.to('#panelEsmaltado', {
           const from = poseFor(TT_SPRITE, poses.pieza.cx,
             poses.pieza.cy - drift, poses.pieza.w);
 
+          // La tarjeta se vacía cuando el sprite ya está opaco y todavía
+          // calzado encima de la figura: así el relevo queda tapado. Vaciarla
+          // en p = 0, con el sprite aún transparente, haría desaparecer la
+          // figura un instante antes de que arranque el vuelo.
+          swap.show(p >= TT_FADE_IN);
+
           // El sprite se apaga y la imagen estática se enciende en el mismo
           // umbral: el relevo ocurre con las dos calzadas, sin superponerse
           // ni dejar un hueco. Al principio entra fundido, para no aparecer
@@ -944,6 +1101,7 @@ tl.to('#panelEsmaltado', {
         },
         onLeaveBack: () => {
           revealVisual(false);
+          swap.show(false);  // la figura vuelve a la tarjeta
           gsap.set(canvas, { autoAlpha: 0 });
         }
       });

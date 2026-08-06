@@ -871,6 +871,16 @@ p {
   display: block;
 }
 
+/* Segunda foto de la tarjeta, superpuesta a la primera y colocada por el JS
+   de los puentes: la tarjeta de Van Gogh empieza vacía y recibe la pieza al
+   aterrizar, y la de Totoro queda vacía cuando la figura despega. Al estar
+   las dos cargadas y decodificadas, el cambio es sólo de opacidad — no
+   parpadea y se deshace solo al scrollear hacia arriba. */
+.collection-card-alt {
+  position: absolute;
+  inset: 0;
+}
+
 /* Label sobreimpreso en la tarjeta */
 .collection-card-label {
   position: absolute;
